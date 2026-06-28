@@ -34,6 +34,8 @@ class HandeyeClient:
         self.compute_calibration_client = self.node.create_client(ehm.srv.ComputeCalibration,
                                                                   hec.COMPUTE_CALIBRATION_TOPIC)
         self.compute_calibration_client.wait_for_service()
+        self.save_samples_client = self.node.create_client(ehm.srv.SaveSamples, hec.SAVE_SAMPLES_TOPIC)
+        self.save_samples_client.wait_for_service()
         self.save_calibration_client = self.node.create_client(ehm.srv.SaveCalibration, hec.SAVE_CALIBRATION_TOPIC)
         self.save_calibration_client.wait_for_service()
 
@@ -91,7 +93,9 @@ class HandeyeClient:
         return self.compute_calibration_client.call(ehm.srv.ComputeCalibration.Request())
 
     def save(self):
-        return self.save_calibration_client.call(ehm.srv.SaveCalibration.Request())
+        save_samples_response = self.save_samples_client.call(ehm.srv.SaveSamples.Request())
+        save_calibration_response = self.save_calibration_client.call(ehm.srv.SaveCalibration.Request())
+        return save_samples_response, save_calibration_response
 
     # TODO: services: evaluation
 

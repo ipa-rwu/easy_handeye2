@@ -234,5 +234,14 @@ class RqtHandeyeCalibratorWidget(QWidget):
             self._widget.saveButton.setEnabled(False)
 
     def handle_save_calibration(self):
-        self.client.save()
-        self._widget.saveButton.setEnabled(False)
+        save_samples_response, save_calibration_response = self.client.save()
+        if save_samples_response.success and save_calibration_response.success:
+            self._widget.outputBox.appendPlainText('\nSaved calibration and samples.')
+            self._widget.saveButton.setEnabled(False)
+        else:
+            self._widget.outputBox.appendPlainText(
+                '\nSave failed: calibration_saved={} samples_saved={}'.format(
+                    save_calibration_response.success,
+                    save_samples_response.success,
+                )
+            )

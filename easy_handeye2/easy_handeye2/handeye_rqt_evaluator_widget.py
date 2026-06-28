@@ -27,7 +27,7 @@ class RqtHandeyeEvaluatorWidget(QWidget):
         self._node = context.node
         # self.parameters_provider = HandeyeCalibrationParametersProvider(self._node)
         # self.parameters = self.parameters_provider.read()
-        self._node.declare_parameter('name', descriptor=ParameterDescriptor(type=ParameterType.PARAMETER_STRING))
+        self._node.declare_parameter('name', '', descriptor=ParameterDescriptor(type=ParameterType.PARAMETER_STRING))
         name = self._node.get_parameter('name').get_parameter_value().string_value
         self.calibration = load_calibration(name)
         self.parameters = self.calibration.parameters
