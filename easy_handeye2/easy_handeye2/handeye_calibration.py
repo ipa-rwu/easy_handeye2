@@ -17,13 +17,17 @@ class HandeyeCalibrationParametersProvider:
     def __init__(self, node: Node):
         self.node = node
         # declare and read parameters
-        self.node.declare_parameter('name', descriptor=ParameterDescriptor(type=ParameterType.PARAMETER_STRING))
-        self.node.declare_parameter('calibration_type', descriptor=ParameterDescriptor(type=ParameterType.PARAMETER_STRING))
-        self.node.declare_parameter('robot_base_frame', descriptor=ParameterDescriptor(type=ParameterType.PARAMETER_STRING))
-        self.node.declare_parameter('robot_effector_frame', descriptor=ParameterDescriptor(type=ParameterType.PARAMETER_STRING))
-        self.node.declare_parameter('tracking_base_frame', descriptor=ParameterDescriptor(type=ParameterType.PARAMETER_STRING))
-        self.node.declare_parameter('tracking_marker_frame', descriptor=ParameterDescriptor(type=ParameterType.PARAMETER_STRING))
+        self.node.declare_parameter('name', '', descriptor=ParameterDescriptor(type=ParameterType.PARAMETER_STRING))
+        self.node.declare_parameter('calibration_type', '', descriptor=ParameterDescriptor(type=ParameterType.PARAMETER_STRING))
+        self.node.declare_parameter('robot_base_frame', '', descriptor=ParameterDescriptor(type=ParameterType.PARAMETER_STRING))
+        self.node.declare_parameter('robot_effector_frame', '', descriptor=ParameterDescriptor(type=ParameterType.PARAMETER_STRING))
+        self.node.declare_parameter('tracking_base_frame', '', descriptor=ParameterDescriptor(type=ParameterType.PARAMETER_STRING))
+        self.node.declare_parameter('tracking_marker_frame', '', descriptor=ParameterDescriptor(type=ParameterType.PARAMETER_STRING))
         self.node.declare_parameter('freehand_robot_movement', True)
+        self.node.declare_parameter('move_group_namespace', '/',
+                                    descriptor=ParameterDescriptor(type=ParameterType.PARAMETER_STRING))
+        self.node.declare_parameter('move_group', '',
+                                    descriptor=ParameterDescriptor(type=ParameterType.PARAMETER_STRING))
 
     def read(self):
         ret = HandeyeCalibrationParameters(
@@ -34,6 +38,8 @@ class HandeyeCalibrationParametersProvider:
             tracking_base_frame=self.node.get_parameter('tracking_base_frame').get_parameter_value().string_value,
             tracking_marker_frame=self.node.get_parameter('tracking_marker_frame').get_parameter_value().string_value,
             freehand_robot_movement=self.node.get_parameter('freehand_robot_movement').get_parameter_value().bool_value,
+            move_group_namespace=self.node.get_parameter('move_group_namespace').get_parameter_value().string_value,
+            move_group=self.node.get_parameter('move_group').get_parameter_value().string_value,
         )
         return ret
 

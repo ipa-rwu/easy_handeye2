@@ -112,6 +112,10 @@ to accept or discard each sample. At the end, the parameters will be saved in a 
     <!-- fill in the following parameters according to your tracking system's published tf frames -->
     <arg name="tracking_base_frame" value="/optical_origin"/>
     <arg name="tracking_marker_frame" value="/optical_target"/>
+
+    <!-- optional: if this MoveIt move group exists, each sample also stores that group's joint state -->
+    <arg name="move_group_namespace" value="/"/>
+    <arg name="move_group" value="manipulator"/>
   </include>
 </launch>
 ```
@@ -134,9 +138,15 @@ to accept or discard each sample. At the end, the parameters will be saved in a 
     <!-- fill in the following parameters according to your tracking system's published tf frames -->
     <arg name="tracking_base_frame" value="/optical_origin"/>
     <arg name="tracking_marker_frame" value="/optical_target"/>
+
+    <!-- optional: if this MoveIt move group exists, each sample also stores that group's joint state -->
+    <arg name="move_group_namespace" value="/"/>
+    <arg name="move_group" value="manipulator"/>
   </include>
 </launch>
 ```
+
+If `move_group` is left empty, calibration samples contain only the TF transforms required for hand-eye solving. If `move_group` is set and can be resolved through MoveIt, `easy_handeye2` also records the current joint names and positions for that group into each `.samples` entry. This does not change the calibration math itself; it adds per-sample robot-state context that can be reused by downstream tooling.
 
 
 #### Moving the robot
