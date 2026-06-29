@@ -55,7 +55,7 @@ eye-on-base             |  eye-on-hand
 
 ## Getting started
 
-- clone this repository into your catkin workspace:
+- clone this repository into your ROS 2 workspace:
 ```
 cd ~/easy_handeye2_ws/src  # replace with path to your workspace
 git clone https://github.com/marcoesposito1988/easy_handeye2
@@ -72,6 +72,11 @@ rosdep install -iyr --from-paths src
 colcon build
 ```
 
+- source the workspace before running the launch files or CLI tools:
+```
+source install/setup.bash
+```
+
 ## Usage
 
 Two launch files, one for computing and one for publishing the calibration respectively,
@@ -80,90 +85,158 @@ overridden to specify the correct tf reference frames, and to avoid conflicts wh
 multiple calibrations at once.
 
 The suggested integration is:
-- create a new `handeye_calibrate.launch.py` file, which includes the robot's and tracking system's launch files, as well as 
-`easy_handeye`'s `calibrate.launch.py` as illustrated below in the next section "Calibration"
-- in each of your launch files where you need the result of the calibration, include `easy_handeye`'s `publish.launch.py` 
-as illustrated below in the section "Publishing" 
+- create a new `handeye_calibrate.launch.py` file, which includes the robot's and tracking system's launch files, as well as
+  `easy_handeye2`'s `calibrate.launch.py`
+- in each of your launch files where you need the result of the calibration, include
+  `easy_handeye2`'s `publish.launch.py`
 
 ### Calibration
 
 For both use cases, you can either launch the `calibrate.launch.py`
 launch file, or you can include it in another launchfile as shown below. Either
-way, the launch file will bring up a calibration script. By default, the script will interactively ask you
-to accept or discard each sample. At the end, the parameters will be saved in a yaml file.
+way, the launch file starts `handeye_server` plus the RQT calibrator GUI. Samples are taken and managed from the GUI, and the resulting calibration can be saved to the package's calibration storage.
 
 #### eye-in-hand
 
-```xml
-<launch>
-  <!-- (start your robot's MoveIt! stack, e.g. include its moveit_planning_execution.launch.py) -->
-  <!-- (start your tracking system's ROS driver) -->
+Run the calibrator directly:
 
-  <include file="$(find easy_handeye2)/launch/calibrate.launch.py">
-    <arg name="calibration_type" value="eye_in_hand"/>
-
-    <!-- you can choose any identifier, as long as you use the same for publishing the calibration -->
-    <arg name="name" value="my_eih_calib"/>
-
-    <!-- fill in the following parameters according to your robot's published tf frames -->
-    <arg name="robot_base_frame" value="/base_link"/>
-    <arg name="robot_effector_frame" value="/ee_link"/>
-
-    <!-- fill in the following parameters according to your tracking system's published tf frames -->
-    <arg name="tracking_base_frame" value="/optical_origin"/>
-    <arg name="tracking_marker_frame" value="/optical_target"/>
-
-    <!-- optional: if this MoveIt move group exists, each sample also stores that group's joint state -->
-    <arg name="move_group_namespace" value="/"/>
-    <arg name="move_group" value="manipulator"/>
-  </include>
-</launch>
+```bash
+ros2 launch easy_handeye2 calibrate.launch.py \
+  calibration_type:=eye_in_hand \
+  name:=my_eih_calib \
+  robot_base_frame:=/base_link \
+  robot_effector_frame:=/ee_link \
+  tracking_base_frame:=/optical_origin \
+  tracking_marker_frame:=/optical_target \
+  move_group_namespace:=/ \
+  move_group:=manipulator
 ```
 
 #### eye-on-base
 
-```xml
-<launch>
-  <!-- (start your robot's MoveIt! stack, e.g. include its moveit_planning_execution.launch) -->
-  <!-- (start your tracking system's ROS driver) -->
+```bash
+ros2 launch easy_handeye2 calibrate.launch.py \
+  calibration_type:=eye_on_base \
+  name:=my_eob_calib \
+  robot_base_frame:=/base_link \
+  robot_effector_frame:=/ee_link \
+  tracking_base_frame:=/optical_origin \
+  tracking_marker_frame:=/optical_target \
+  move_group_namespace:=/ \
+  move_group:=manipulator
+```
 
-  <include file="$(find easy_handeye2)/launch/calibrate.launch.py">
-    <arg name="calibration_type" value="eye_on_base"/>
-    <arg name="name" value="my_eob_calib"/>
+If you want to include `easy_handeye2` from your own ROS 2 Python launch file, use `IncludeLaunchDescription` and pass the launch arguments there. For example:
 
-    <!-- fill in the following parameters according to your robot's published tf frames -->
-    <arg name="robot_base_frame" value="/base_link"/>
-    <arg name="robot_effector_frame" value="/ee_link"/>
+```python
+from launch.actions import IncludeLaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import PathJoinSubstitution
+from launch_ros.substitutions import FindPackageShare
 
-    <!-- fill in the following parameters according to your tracking system's published tf frames -->
-    <arg name="tracking_base_frame" value="/optical_origin"/>
-    <arg name="tracking_marker_frame" value="/optical_target"/>
-
-    <!-- optional: if this MoveIt move group exists, each sample also stores that group's joint state -->
-    <arg name="move_group_namespace" value="/"/>
-    <arg name="move_group" value="manipulator"/>
-  </include>
-</launch>
+IncludeLaunchDescription(
+    PythonLaunchDescriptionSource(
+        PathJoinSubstitution([FindPackageShare("easy_handeye2"), "launch", "calibrate.launch.py"])
+    ),
+    launch_arguments={
+        "calibration_type": "eye_in_hand",
+        "name": "my_eih_calib",
+        "robot_base_frame": "/base_link",
+        "robot_effector_frame": "/ee_link",
+        "tracking_base_frame": "/optical_origin",
+        "tracking_marker_frame": "/optical_target",
+        "move_group_namespace": "/",
+        "move_group": "manipulator",
+    }.items(),
+)
 ```
 
 If `move_group` is left empty, calibration samples contain only the TF transforms required for hand-eye solving. If `move_group` is set and can be resolved through MoveIt, `easy_handeye2` also records the current joint names and positions for that group into each `.samples` entry. This does not change the calibration math itself; it adds per-sample robot-state context that can be reused by downstream tooling.
+
+#### Postprocess Multiple Sample Files
+
+If you collected multiple `.samples` files for the same setup, you can recompute calibrations offline without rerunning the GUI.
+
+Process each file independently with all supported OpenCV algorithms:
+
+```bash
+process_handeye_samples \
+  sample_set_a.samples \
+  sample_set_b.samples \
+  --output-dir ./postprocessed
+```
+
+This writes one `.calib` file per input sample file and per algorithm, for example:
+
+- `sample_set_a_tsai-lenz.calib`
+- `sample_set_a_park.calib`
+- `sample_set_b_horaud.calib`
+
+If you want to merge multiple sample files into one larger sample set first, use `--merge`:
+
+```bash
+process_handeye_samples \
+  sample_set_a.samples \
+  sample_set_b.samples \
+  sample_set_c.samples \
+  --merge \
+  --name merged_wrist_camera_calibration \
+  --output-dir ./postprocessed
+```
+
+This produces one merged calibration set per algorithm, for example:
+
+- `merged_wrist_camera_calibration_tsai-lenz.calib`
+- `merged_wrist_camera_calibration_park.calib`
+- `merged_wrist_camera_calibration_horaud.calib`
+
+You can also restrict the algorithms explicitly:
+
+```bash
+process_handeye_samples \
+  sample_set_a.samples \
+  sample_set_b.samples \
+  --merge \
+  --algorithms Tsai-Lenz Park Horaud
+```
+
+If the `.samples` files do not contain complete calibration metadata, provide it on the command line:
+
+```bash
+process_handeye_samples \
+  sample_set_a.samples \
+  sample_set_b.samples \
+  --merge \
+  --calibration-type eye_in_hand \
+  --robot-base-frame chassis \
+  --robot-effector-frame green_gripper_frame_link \
+  --tracking-base-frame left_arm_camera_optical \
+  --tracking-marker-frame tag_42
+```
+
+`process_handeye_samples` is installed as a console entry point when the workspace is built and sourced. You can also invoke the module directly if needed:
+
+```bash
+python3 -m easy_handeye2.process_samples ...
+```
 
 
 #### Moving the robot
 
 **WARNING**: this will only be available for Iron, and is work-in-progress
 
-A GUI for automatic robot movement is provided by the `rqt_easy_handeye` package. Please refer to [its documentation](rqt_easy_handeye/README.md).
+Automatic robot movement support remains work-in-progress. The current ROS 2 package includes the calibrator and evaluator RQT tools, but the movement helper path is not the primary workflow here.
 
 This is optional, and can be disabled in both aforementioned cases with:
-```xml
-<launch>
-  <include file="$(find easy_handeye2)/launch/calibrate.launch.py">
-      <!-- other arguments, as described above... -->
-      
-      <arg name="freehand_robot_movement" value="true" />
-  </include>
-</launch>
+```bash
+ros2 launch easy_handeye2 calibrate.launch.py \
+  calibration_type:=eye_in_hand \
+  name:=my_eih_calib \
+  robot_base_frame:=/base_link \
+  robot_effector_frame:=/ee_link \
+  tracking_base_frame:=/optical_origin \
+  tracking_marker_frame:=/optical_target \
+  freehand_robot_movement:=true
 ```
 
 It will then be the user's responsibility to make the robot publish its own pose into `tf`. Please check that the robot's pose is updated correctly in 
@@ -190,18 +263,9 @@ The `publish.launch.py` starts a node that publishes the transformation found du
 The parameters are automatically loaded from the yaml file, according to the specified namespace.
 For convenience, you can include this file within your own launch script. You can include this file multiple times to 
 publish many calibrations simultaneously; the following example publishes one eye-on-base and one eye-in-hand calibration:
-```xml
-<launch>
-  <!-- (start your robot's MoveIt! stack, e.g. include its moveit_planning_execution.launch) -->
-  <!-- (start your tracking system's ROS driver) -->
-
-  <include file="$(find easy_handeye2)/launch/publish.launch.py">
-    <arg name="name" value="my_eob_calib"/> <!-- use the same name that you used during calibration! -->
-  </include>
-  <include file="$(find easy_handeye2)/launch/publish.launch.py">
-    <arg name="name" value="my_eih_calib"/> <!-- use the same name that you used during calibration! -->
-  </include>
-</launch>
+```bash
+ros2 launch easy_handeye2 publish.launch.py name:=my_eob_calib
+ros2 launch easy_handeye2 publish.launch.py name:=my_eih_calib
 ```
 You can have any number of calibrations at once (provided you specify distinct namespaces). 
 If you perform again any calibration, you do not need to do anything: the next time you start the system, 
@@ -214,7 +278,7 @@ Please check the [troubleshooting](docs/troubleshooting.md)
 
 #### How can I ...
 ##### Calibrate an RGBD camera (e.g. Kinect, Xtion, ...) with a robot for automatic object collision avoidance with MoveIt! ?
-This is a perfect example of an eye-on-base calibration. You can take a look at this [example launch file](docs/example_launch/ur5_kinect_calibration.launch) written for an UR5 and a Kinect via aruco_ros, or [example for LWR iiwa with Xtion/Kinect ](docs/example_launch/iiwa_kinect_xtion_calibration.launch).
+This is a perfect example of an eye-on-base calibration. You can take a look at this [example launch file](docs/example_launch/ur5_kinect_calibration.launch) written for a UR5 and a Kinect via aruco_ros, or the [example for LWR iiwa with Xtion/Kinect](docs/example_launch/iiwa_kinect_xtion_calibration.launch).
 ##### Disable the automatic robotic movements GUI?
 You can pass the argument `freehand_robot_movement:=true` to `calibrate.launch`.
 ##### Calibrate one robot against multiple tracking systems?
