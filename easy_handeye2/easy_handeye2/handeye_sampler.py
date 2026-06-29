@@ -1,10 +1,14 @@
 import os
 import pathlib
+import threading
 from typing import Optional
+import xml.etree.ElementTree as ET
 
 import easy_handeye2_msgs.msg
 import tf2_ros
 import yaml
+from sensor_msgs.msg import JointState
+from rclpy.parameter_client import AsyncParameterClient
 from tf2_ros import Buffer, TransformListener, TransformBroadcaster
 from rosidl_runtime_py import message_to_yaml, set_message_fields
 from easy_handeye2_msgs.msg import Sample, SampleList
@@ -45,6 +49,12 @@ class HandeyeSampler:
         """
         list of acquired samples
         """
+        self._joint_state_lock = threading.Lock()
+        self._latest_joint_state: JointState | None = None
+        self._tracked_joint_names: list[str] = []
+        self._joint_state_subscription = None
+        self._joint_state_warning_emitted = False
+        self._configure_joint_state_capture()
 
     def wait_for_tf_init(self) -> bool:
         """
@@ -111,7 +121,190 @@ class HandeyeSampler:
         ret = Sample()
         ret.robot = robot.transform
         ret.tracking = tracking.transform
+        self._attach_group_joint_state(ret)
         return ret
+
+    def _configure_joint_state_capture(self):
+        move_group = self.handeye_parameters.move_group.strip()
+        if not move_group:
+            self.node.get_logger().info('No move_group configured for calibration sample recording; TF data only will be stored')
+            return
+
+        try:
+            self._tracked_joint_names = self._resolve_group_joint_names(move_group)
+        except Exception as exc:
+            self.node.get_logger().warn(
+                f'Failed to resolve move group "{move_group}" for calibration sample recording: {exc}'
+            )
+            self._tracked_joint_names = []
+            return
+
+        if not self._tracked_joint_names:
+            self.node.get_logger().warn(
+                f'Move group "{move_group}" was resolved, but it exposes no active joints; TF data only will be stored'
+            )
+            return
+
+        self._joint_state_subscription = self.node.create_subscription(
+            JointState,
+            'joint_states',
+            self._joint_state_callback,
+            10,
+        )
+        self.node.get_logger().info(
+            f'Recording joint states for move group "{move_group}" with joints: {", ".join(self._tracked_joint_names)}'
+        )
+
+    def _resolve_group_joint_names(self, move_group: str) -> list[str]:
+        move_group_node = self._move_group_node_name()
+        param_client = AsyncParameterClient(self.node, move_group_node)
+        if not param_client.wait_for_services(timeout_sec=3.0):
+            raise RuntimeError(f'parameter service for node "{move_group_node}" is not available')
+
+        requested_names = ['robot_description', 'robot_description_semantic']
+        future = param_client.get_parameters(requested_names)
+        rclpy.spin_until_future_complete(self.node, future, timeout_sec=5.0)
+        if not future.done():
+            raise RuntimeError(f'timed out reading robot description parameters from "{move_group_node}"')
+
+        result = future.result()
+        if result is None:
+            raise RuntimeError(f'failed to read robot description parameters from "{move_group_node}"')
+
+        params = {
+            name: value.string_value
+            for name, value in zip(requested_names, result.values)
+        }
+        robot_description = params.get('robot_description', '')
+        robot_description_semantic = params.get('robot_description_semantic', '')
+        if not robot_description or not robot_description_semantic:
+            raise RuntimeError(
+                f'"{move_group_node}" does not expose robot_description and robot_description_semantic parameters'
+            )
+
+        return self._extract_group_joints_from_descriptions(robot_description, robot_description_semantic, move_group)
+
+    def _move_group_node_name(self) -> str:
+        namespace = (self.handeye_parameters.move_group_namespace or '/').strip()
+        if not namespace or namespace == '/':
+            return '/move_group'
+        namespace = '/' + namespace.strip('/')
+        return f'{namespace}/move_group'
+
+    def _extract_group_joints_from_descriptions(
+        self,
+        robot_description: str,
+        robot_description_semantic: str,
+        move_group: str,
+    ) -> list[str]:
+        urdf_root = ET.fromstring(robot_description)
+        srdf_root = ET.fromstring(robot_description_semantic)
+
+        joints_by_parent: dict[str, list[dict[str, str]]] = {}
+        for joint in urdf_root.findall('joint'):
+            parent = joint.find('parent')
+            child = joint.find('child')
+            if parent is None or child is None:
+                continue
+            joints_by_parent.setdefault(parent.attrib['link'], []).append({
+                'name': joint.attrib['name'],
+                'type': joint.attrib.get('type', ''),
+                'child': child.attrib['link'],
+            })
+
+        groups = {group.attrib['name']: group for group in srdf_root.findall('group')}
+        if move_group not in groups:
+            raise RuntimeError(f'group "{move_group}" not found in robot_description_semantic')
+
+        resolved: list[str] = []
+        seen: set[str] = set()
+
+        def add_joint(joint_name: str):
+            if joint_name not in seen:
+                seen.add(joint_name)
+                resolved.append(joint_name)
+
+        def collect_chain(base_link: str, tip_link: str):
+            chain_joints = self._find_chain_joints(joints_by_parent, base_link, tip_link)
+            if chain_joints is None:
+                raise RuntimeError(f'could not resolve chain from "{base_link}" to "{tip_link}"')
+            for joint_name in chain_joints:
+                add_joint(joint_name)
+
+        def collect_group(group_name: str):
+            group = groups.get(group_name)
+            if group is None:
+                raise RuntimeError(f'group "{group_name}" not found in robot_description_semantic')
+            for chain in group.findall('chain'):
+                collect_chain(chain.attrib['base_link'], chain.attrib['tip_link'])
+            for joint in group.findall('joint'):
+                add_joint(joint.attrib['name'])
+            for subgroup in group.findall('group'):
+                collect_group(subgroup.attrib['name'])
+
+        collect_group(move_group)
+        return resolved
+
+    def _find_chain_joints(
+        self,
+        joints_by_parent: dict[str, list[dict[str, str]]],
+        base_link: str,
+        tip_link: str,
+    ) -> list[str] | None:
+        def dfs(link_name: str, active_joints: list[str], visited_links: set[str]) -> list[str] | None:
+            if link_name == tip_link:
+                return active_joints
+            if link_name in visited_links:
+                return None
+
+            next_visited = set(visited_links)
+            next_visited.add(link_name)
+            for joint in joints_by_parent.get(link_name, []):
+                next_active = list(active_joints)
+                if joint['type'] != 'fixed':
+                    next_active.append(joint['name'])
+                result = dfs(joint['child'], next_active, next_visited)
+                if result is not None:
+                    return result
+            return None
+
+        return dfs(base_link, [], set())
+
+    def _joint_state_callback(self, msg: JointState):
+        with self._joint_state_lock:
+            self._latest_joint_state = msg
+
+    def _attach_group_joint_state(self, sample: Sample):
+        if not self._tracked_joint_names:
+            return
+
+        with self._joint_state_lock:
+            joint_state = self._latest_joint_state
+
+        if joint_state is None:
+            if not self._joint_state_warning_emitted:
+                self.node.get_logger().warn(
+                    'A move group was configured for calibration sample recording, but no /joint_states message has been received yet'
+                )
+                self._joint_state_warning_emitted = True
+            return
+
+        joint_map = {
+            name: position
+            for name, position in zip(joint_state.name, joint_state.position)
+        }
+        missing_joints = [name for name in self._tracked_joint_names if name not in joint_map]
+        if missing_joints:
+            if not self._joint_state_warning_emitted:
+                self.node.get_logger().warn(
+                    'Skipping joint-state recording for this sample because /joint_states is missing move-group joints: '
+                    + ', '.join(missing_joints)
+                )
+                self._joint_state_warning_emitted = True
+            return
+
+        sample.joint_names = list(self._tracked_joint_names)
+        sample.joint_values = [joint_map[name] for name in self._tracked_joint_names]
 
     def current_transforms(self) -> Sample | None:
         return self._get_transforms()
